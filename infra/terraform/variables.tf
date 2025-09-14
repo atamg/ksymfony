@@ -70,3 +70,9 @@ variable "user_allowed_ip_list" {
   description = "Static SSH allow-list (IPv4 CIDRs)."
   default     = []
 }
+
+
+locals {
+  open_http_80  = tobool(var.open_http_80)
+  open_http_443 = tobool(var.open_https_443)
+}
