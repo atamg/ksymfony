@@ -57,6 +57,10 @@ jobs:
 
       - name: Terraform validate
         run: terraform validate
+      - name: Normalize TF bools
+        run: |
+          echo "TF_VAR_open_http_80=${{ fromJSON(secrets.TF_VAR_OPEN_HTTP_80) && 'true' || 'false' }}" >> $GITHUB_ENV
+          echo "TF_VAR_open_http_443=${{ fromJSON(secrets.TF_VAR_OPEN_HTTPS_443) && 'true' || 'false' }}" >> $GITHUB_ENV
 
       - name: Terraform plan (detailed exit code)
         id: plan
