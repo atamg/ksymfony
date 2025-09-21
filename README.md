@@ -16,7 +16,7 @@ A minimal Symfony app with container and deployment artifacts; ready to run loca
 - App: PHP 8.3 + Symfony (sources in `src/`). The app exposes basic health endpoints (`/healthz`, `/readyz`).
 - Containers: a multi-stage `Dockerfile` produces a small PHP-FPM runtime image; Nginx serves static assets and proxies requests to PHP-FPM in container setups.
 - Local development: `docker-compose.yml` runs Nginx and PHP-FPM so you can develop against an environment close to production.
-- Production infra: Terraform (under `infra/terraform/`) provisions an ECR repository and a single EC2 host. The host runs Docker and Docker Compose; CI pushes images to ECR and the host pulls and runs the compose stack under `/opt/app`.
+- Production infra: Terraform (under `infra/terraform/`) provisions an ECR repository and a single EC2 host (t3.micro). The host runs Docker and Docker Compose; CI pushes images to ECR and the host pulls and runs the compose stack under `/opt/app`.I selected this setup to remain within the AWS Free Tier scope.
 - CI/CD: GitHub Actions build, scan (Trivy), and push images to ECR, then deploy to the EC2 host via SSH/SCP. Workflows use OIDC role assumption to avoid long-lived AWS credentials.
 
 
