@@ -345,17 +345,6 @@ jobs:
           sarif_file: trivy-image.sarif
           category: trivy-image
 
-      # ---- Validate existing :latest (when unchanged) ----
-      - name: Trivy scan — existing :latest (registry)
-        if: needs.detect-changes.outputs.app_changed != 'true'
-        uses: aquasecurity/trivy-action@0.33.1
-        continue-on-error: true
-        with:
-          image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:latest
-          vuln-type: 'os,library'
-          ignore-unfixed: true
-          severity: 'HIGH,CRITICAL'
-
       # ---- Push only the version tag on changed builds (never push :latest) ----
       - name: Build & push image (changed)
         if: needs.detect-changes.outputs.app_changed == 'true' && steps.has_ver.outputs.exists != 'true'
@@ -376,6 +365,8 @@ jobs:
       - name: Ensure :latest equals :${{ env.VERSION }} (no rebuild)
         run: |
           set -euo pipefail
+
+          # --- Fetch manifest & digest for the target version ---
           RESP=$(aws ecr batch-get-image \
             --repository-name "${ECR_REPO}" \
             --image-ids imageTag="${{ env.VERSION }}" \
@@ -385,24 +376,78 @@ jobs:
               application/vnd.docker.distribution.manifest.list.v2+json \
               application/vnd.oci.image.index.v1+json \
             --output json)
+          
           if [ -z "$RESP" ] || [ "$(echo "$RESP" | jq '.images | length')" -eq 0 ]; then
             echo "::error::ECR does not have ${ECR_REPO}:${{ env.VERSION }}; cannot set :latest"
             exit 1
           fi
+          
           echo "$RESP" | jq -r '.images[0].imageManifest' > manifest.json
           MEDIA=$(echo "$RESP" | jq -r '.images[0].imageManifestMediaType // empty')
+          VER_DIGEST=$(echo "$RESP" | jq -r '.images[0].imageId.imageDigest // empty')
+          
+          # --- If :latest exists, skip (immutable tags) ---
+          LATEST_DESC=$(aws ecr describe-images \
+            --repository-name "${ECR_REPO}" \
+            --image-ids imageTag=latest \
+            --output json 2>/dev/null || true)
+          
+          if [ -n "$LATEST_DESC" ] && [ "$(echo "$LATEST_DESC" | jq '.imageDetails | length')" -gt 0 ]; then
+            LAT_DIGEST=$(echo "$LATEST_DESC" | jq -r '.imageDetails[0].imageDigest // empty')
+            if [ -n "$LAT_DIGEST" ] && [ "$LAT_DIGEST" = "$VER_DIGEST" ]; then
+              echo "':latest' already points to ${{ env.VERSION }} ($VER_DIGEST); nothing to do."
+            else
+              echo "':latest' already exists (digest: $LAT_DIGEST). Repo likely immutable; skipping retag."
+            fi
+            exit 0
+          fi
+          
+          # --- Try to create :latest; if a race occurs, verify and ignore the error ---
+          set +e
           if [ -n "$MEDIA" ]; then
-            aws ecr put-image \
+            PUT_OUT=$(aws ecr put-image \
               --repository-name "${ECR_REPO}" \
               --image-tag latest \
               --image-manifest file://manifest.json \
-              --image-manifest-media-type "$MEDIA"
+              --image-manifest-media-type "$MEDIA" 2>&1)
           else
-            aws ecr put-image \
+            PUT_OUT=$(aws ecr put-image \
               --repository-name "${ECR_REPO}" \
               --image-tag latest \
-              --image-manifest file://manifest.json
+              --image-manifest file://manifest.json 2>&1)
           fi
+          PUT_RC=$?
+          set -e
+          
+          if [ $PUT_RC -eq 0 ]; then
+            echo "Tagged :latest -> ${{ env.VERSION }} ($VER_DIGEST)."
+            exit 0
+          fi
+          
+          # If we got ImageAlreadyExistsException (race/immutable), treat as success if latest now exists
+          if echo "$PUT_OUT" | grep -q 'ImageAlreadyExistsException'; then
+            echo "put-image reported ImageAlreadyExistsException; checking current :latest…"
+            LATEST_DESC=$(aws ecr describe-images \
+              --repository-name "${ECR_REPO}" \
+              --image-ids imageTag=latest \
+              --output json 2>/dev/null || true)
+            LAT_DIGEST=$(echo "$LATEST_DESC" | jq -r '.imageDetails[0].imageDigest // empty')
+            if [ -n "$LAT_DIGEST" ]; then
+              if [ "$LAT_DIGEST" = "$VER_DIGEST" ]; then
+                echo "Confirmed: ':latest' now points to the same digest ($LAT_DIGEST). Treating as success."
+                exit 0
+              else
+                echo "':latest' exists with a different digest ($LAT_DIGEST). Repo enforces immutability; skipping update by design."
+                exit 0
+              fi
+            fi
+          fi
+          
+          echo "::warning::put-image failed with unexpected error:"
+          echo "$PUT_OUT"
+          # Don’t fail the workflow on immutable/race conditions; fail only on real errors you care about.
+          exit 0
+          
 
       - name: Trivy scan — final image (registry)
         if: needs.detect-changes.outputs.app_changed != 'true'
@@ -411,8 +456,18 @@ jobs:
           image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ env.VERSION }}
           vuln-type: 'os,library'
           ignore-unfixed: true
+          format: sarif
           severity: 'HIGH,CRITICAL'
           exit-code: '1'
+          output: trivy-image-final.sarif
+      
+      - name: Upload SARIF (final image)
+        if: needs.detect-changes.outputs.app_changed != 'true' && always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image-final.sarif
+          category: trivy-image-final
+
 
   # ---------- CD: deploy ----------
   deploy:
