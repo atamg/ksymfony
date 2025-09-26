@@ -345,17 +345,6 @@ jobs:
           sarif_file: trivy-image.sarif
           category: trivy-image
 
-      # ---- Validate existing :latest (when unchanged) ----
-      - name: Trivy scan — existing :latest (registry)
-        if: needs.detect-changes.outputs.app_changed != 'true'
-        uses: aquasecurity/trivy-action@0.33.1
-        continue-on-error: true
-        with:
-          image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:latest
-          vuln-type: 'os,library'
-          ignore-unfixed: true
-          severity: 'HIGH,CRITICAL'
-
       # ---- Push only the version tag on changed builds (never push :latest) ----
       - name: Build & push image (changed)
         if: needs.detect-changes.outputs.app_changed == 'true' && steps.has_ver.outputs.exists != 'true'
@@ -403,6 +392,16 @@ jobs:
               --image-tag latest \
               --image-manifest file://manifest.json
           fi
+            # ---- Validate existing :latest (when unchanged) ----
+      - name: Trivy scan — existing :latest (registry)
+        if: needs.detect-changes.outputs.app_changed != 'true'
+        uses: aquasecurity/trivy-action@0.33.1
+        continue-on-error: true
+        with:
+          image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:latest
+          vuln-type: 'os,library'
+          ignore-unfixed: true
+          severity: 'HIGH,CRITICAL'
 
       - name: Trivy scan — final image (registry)
         if: needs.detect-changes.outputs.app_changed != 'true'
@@ -413,6 +412,15 @@ jobs:
           ignore-unfixed: true
           severity: 'HIGH,CRITICAL'
           exit-code: '1'
+          output: trivy-image-final.sarif
+      
+      - name: Upload SARIF (final image)
+        if: needs.detect-changes.outputs.app_changed != 'true' && always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image-final.sarif
+          category: trivy-image
+
 
   # ---------- CD: deploy ----------
   deploy:
